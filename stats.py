@@ -1,7 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import os
 import json
+import os
+import subprocess
+import sys
+from PIL import Image, ImageTk
 
 TRADES_FILE = "trades_journal.json"
 
@@ -38,14 +41,28 @@ def parse_trades_for_stats(journal_trades):
         })
     return stats_trades
 
-class StatsPage(tk.Toplevel):
-    def __init__(self, master=None):
-        super().__init__(master)
+def open_image_in_default_app(img_path):
+    try:
+        if sys.platform.startswith('darwin'):
+            subprocess.call(('open', img_path))
+        elif os.name == 'nt':
+            os.startfile(img_path)
+        elif os.name == 'posix':
+            subprocess.call(('xdg-open', img_path))
+        else:
+            messagebox.showerror("Unsupported OS", "Cannot open image on this OS.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Could not open image:\n{e}")
+
+class StatsPage(tk.Tk):
+    def __init__(self):
+        super().__init__()
         self.title("Playbook Stats Page")
         self.geometry("1200x800")
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self.quit)
 
         journal_trades = load_journal_data()
+        self.journal_trades = journal_trades
         self.data = parse_trades_for_stats(journal_trades)
         self.filtered_data = self.data[:]
         self.create_widgets()
@@ -185,13 +202,107 @@ class StatsPage(tk.Toplevel):
         selected_item = self.tree.focus()
         if selected_item:
             trade_id = self.tree.item(selected_item, "values")[0]
-            messagebox.showinfo("Trade Details", f"Opening journal entry for Trade ID: {trade_id}\n\n(This would be a popup with full trade details)")
+            self.show_trade_details_popup(trade_id)
 
     def sort_column(self, col):
         messagebox.showinfo("Sorting", f"Sorting by column: {col}\n\n(Implement actual sorting logic here)")
 
+    def show_trade_details_popup(self, trade_id):
+        journal_trades = self.journal_trades
+        try:
+            idx = int(trade_id) - 1
+            if not (0 <= idx < len(journal_trades)):
+                messagebox.showerror("Not found", "Trade not found in journal.")
+                return
+            trade = journal_trades[idx]
+        except Exception:
+            messagebox.showerror("Not found", "Trade not found in journal.")
+            return
+        info = trade.get("info", {})
+        review = trade.get("review", {})
+        tf_screenshots = trade.get("tf_screenshots", {})
+
+        popup = tk.Toplevel(self)
+        popup.title(f"Trade Details (ID {trade_id})")
+        popup.geometry("900x750")
+        popup.grab_set()
+        frame = ttk.Frame(popup)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        def row(label, value, r):
+            ttk.Label(frame, text=label, font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="e", padx=4, pady=2)
+            ttk.Label(frame, text=value, font=("Segoe UI", 9)).grid(row=r, column=1, sticky="w", padx=4, pady=2)
+        row("Symbol:", info.get("symbol", ""), 0)
+        row("Timeframe:", info.get("timeframe", ""), 1)
+        row("Entry Type:", info.get("entry", ""), 2)
+        row("Setup:", info.get("setup", ""), 3)
+        row("Trade Type:", info.get("trade_type", ""), 4)
+        row("Trade Date:", info.get("trade_date", ""), 5)
+        row("Trade Time:", info.get("trade_time", ""), 6)
+        row("Market Session:", info.get("market_session", ""), 7)
+        row("Timezone:", info.get("timezone", ""), 8)
+        row("Entry Price:", info.get("entry_price", ""), 9)
+        row("Lot Size:", info.get("lot_size", ""), 10)
+        row("Stop Loss (pips):", info.get("sl_pips", ""), 11)
+        row("Stop Loss Price:", info.get("sl_price", ""), 12)
+        row("Take Profit (pips):", info.get("tp_pips", ""), 13)
+        row("Take Profit Price:", info.get("tp_price", ""), 14)
+        row("SL Reason:", info.get("sl_reason", ""), 15)
+        row("TP Reason:", info.get("tp_reason", ""), 16)
+        row("Account Balance (Entry):", info.get("account_balance", ""), 17)
+        row("Outcome:", review.get("outcome", ""), 18)
+        row("Final Close Price:", review.get("price", ""), 19)
+        row("Exit Time:", review.get("exit_time", ""), 20)
+        row("Max Drawdown (Pips):", review.get("max_drawdown_pips", ""), 21)
+        row("Notes:", review.get("notes", ""), 22)
+
+        img_row = 23
+        ttk.Label(frame, text="Screenshots:", font=("Segoe UI", 10, "bold")).grid(row=img_row, column=0, sticky="e")
+        col = 1
+        if tf_screenshots:
+            for tf in ["D1", "H4", "H1"]:
+                for when in ["before", "after"]:
+                    img_path = tf_screenshots.get(tf, {}).get(when)
+                    label = ttk.Label(frame, text=f"{tf} {when.title()}")
+                    label.grid(row=img_row, column=col, padx=5, pady=5)
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            pil_img = Image.open(img_path)
+                            pil_img.thumbnail((120, 75))
+                            tk_img = ImageTk.PhotoImage(pil_img)
+                            img_lbl = tk.Label(frame, image=tk_img)
+                            img_lbl.image = tk_img
+                            img_lbl.grid(row=img_row+1, column=col, padx=5, pady=5)
+
+                            def show_image_popup(img_path=img_path):
+                                win = tk.Toplevel()
+                                win.title("Screenshot Preview")
+                                win.geometry("600x400")
+                                win.grab_set()
+                                img = Image.open(img_path)
+                                img.thumbnail((580, 340))
+                                tkimg = ImageTk.PhotoImage(img)
+                                img_label = tk.Label(win, image=tkimg)
+                                img_label.image = tkimg
+                                img_label.pack(pady=10)
+                                btn_frame = ttk.Frame(win)
+                                btn_frame.pack(pady=8)
+                                open_btn = ttk.Button(btn_frame, text="Open in Default App", command=lambda: open_image_in_default_app(img_path))
+                                open_btn.pack(side="left", padx=10)
+                                close_btn = ttk.Button(btn_frame, text="Close", command=win.destroy)
+                                close_btn.pack(side="left", padx=10)
+
+                            img_lbl.bind("<Button-1>", lambda e, p=img_path: show_image_popup(p))
+                        except Exception:
+                            err_lbl = tk.Label(frame, text="(image error)")
+                            err_lbl.grid(row=img_row+1, column=col)
+                    else:
+                        empty = ttk.Label(frame, text="(none)")
+                        empty.grid(row=img_row+1, column=col)
+                    col += 1
+
+        ttk.Button(frame, text="Close", command=popup.destroy).grid(row=img_row+3, column=0, columnspan=col, pady=20)
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()
-    StatsPage(root)
-    root.mainloop()
+    app = StatsPage()
+    app.mainloop()
